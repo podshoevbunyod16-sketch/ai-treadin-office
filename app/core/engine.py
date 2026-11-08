@@ -35,6 +35,8 @@ class PaperTradingEngine:
         if symbol not in self.prices:
             raise ValueError(f"No market price available for {symbol}")
         price = self.prices[symbol]
+        if quantity <= 0:
+            raise ValueError("quantity must be positive")
         if side == Side.BUY:
             self.risk.validate_order(account, symbol, quantity, price, self.prices)
             fee = quantity * price * self.fee_rate
@@ -43,13 +45,11 @@ class PaperTradingEngine:
                 raise ValueError("insufficient virtual cash")
             old = account.positions.get(symbol, Position(symbol))
             new_quantity = old.quantity + quantity
-            old.average_price = ((old.quantity * old.average_price) + quantity * price) / new_quantity
+            old.average_price = ((old.quantity * old.average_price) + total) / new_quantity
             old.quantity = new_quantity
             account.positions[symbol] = old
             account.cash -= total
         else:
-            if quantity <= 0:
-                raise ValueError("quantity must be positive")
             position = account.positions.get(symbol)
             if position is None or quantity > position.quantity:
                 raise ValueError("insufficient position to sell")
