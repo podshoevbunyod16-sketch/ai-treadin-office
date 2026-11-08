@@ -1,0 +1,2 @@
+# Kept for compatibility: requirements.txt already installs MetaTrader5 on Windows.
+-r requirements.txt
