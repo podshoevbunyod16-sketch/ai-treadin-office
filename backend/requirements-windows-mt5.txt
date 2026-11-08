@@ -1,4 +1,2 @@
-# Install on the Windows machine where the MetaTrader 5 terminal runs
-# (either the whole backend in "local" mode, or only the MT5 bridge).
+# Kept for compatibility: requirements.txt already installs MetaTrader5 on Windows.
 -r requirements.txt
-MetaTrader5>=5.0.45

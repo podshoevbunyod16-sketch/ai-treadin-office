@@ -245,6 +245,18 @@ async def rates(account_id: int, symbol: str, timeframe: str = "M15", count: int
     return await accounts.call(account_id, "rates", symbol=symbol, timeframe=timeframe, count=count)
 
 
+@router.get("/{account_id}/book")
+async def market_book(account_id: int, symbol: str, _: User = Depends(current_user)):
+    _check_symbol_http(symbol)
+    return await accounts.call(account_id, "market_book", symbol=symbol)
+
+
+@router.get("/{account_id}/diagnostics")
+async def diagnostics(account_id: int, _: User = Depends(current_user)):
+    """Checklist of terminal/account settings required for trading through the MetaTrader5 Python API."""
+    return await accounts.call(account_id, "diagnostics")
+
+
 # ---------------------------------------------------------------- trading state
 @router.get("/{account_id}/positions")
 async def positions(account_id: int, symbol: str | None = None, _: User = Depends(current_user)):
@@ -325,6 +337,23 @@ async def _trade(request: Request, user: User, db: Session, account_id: int, act
           details={"params": params, "retcode": res.get("retcode"), "retcode_text": res.get("retcode_text"),
                    "order": res.get("order"), "deal": res.get("deal")}, ip=client_ip(request))
     return res
+
+
+class CalcIn(BaseModel):
+    symbol: str
+    side: Literal["buy", "sell"]
+    volume: float = Field(gt=0, le=10000)
+    price: float | None = Field(default=None, gt=0)
+    sl: float | None = Field(default=None, ge=0)
+    tp: float | None = Field(default=None, ge=0)
+
+    _sym = field_validator("symbol")(lambda cls, v: _check_symbol(v))
+
+
+@router.post("/{account_id}/orders/calc")
+async def calc_order(account_id: int, body: CalcIn, _: User = Depends(current_user)):
+    """Margin and P/L at SL/TP calculated by the terminal (order_calc_margin / order_calc_profit)."""
+    return await accounts.call(account_id, "calc", **body.model_dump())
 
 
 @router.post("/{account_id}/orders/check")

@@ -206,3 +206,27 @@ fieldset.plain { border: 0; padding: 0; margin: 0; display: flex; flex-direction
   .content { padding: 16px; }
   .table { display: block; overflow-x: auto; }
 }
+
+/* account diagnostics */
+.diag-summary { padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; font-weight: 600; }
+.diag-summary.ok { background: rgba(34, 197, 94, 0.12); color: var(--pos); }
+.diag-summary.bad { background: rgba(240, 82, 82, 0.12); color: var(--neg); }
+.diag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.diag-list li { display: flex; gap: 10px; align-items: flex-start; }
+.diag-icon { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; flex: none; }
+.diag-ok .diag-icon { background: rgba(34, 197, 94, 0.15); color: var(--pos); }
+.diag-warning .diag-icon { background: rgba(245, 158, 11, 0.15); color: var(--warn); }
+.diag-error .diag-icon { background: rgba(240, 82, 82, 0.15); color: var(--neg); }
+
+/* order ticket estimate & depth of market */
+.calc-box { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; padding: 8px 10px;
+  border: 1px dashed var(--border); border-radius: 8px; margin: 8px 0; }
+.calc-box span:nth-child(odd) { color: var(--muted); }
+.book-table td { padding: 2px 8px; font-variant-numeric: tabular-nums; }
+.book-table .book-sell { color: var(--neg); }
+.book-table .book-buy { color: var(--pos); }
+.book-bar { position: relative; }
+.book-bar i { position: absolute; top: 2px; bottom: 2px; right: 0; opacity: 0.15; border-radius: 2px; }
+.book-sell .book-bar i { background: var(--neg); }
+.book-buy .book-bar i { background: var(--pos); }

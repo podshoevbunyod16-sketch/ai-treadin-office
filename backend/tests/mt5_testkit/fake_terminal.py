@@ -20,8 +20,9 @@ AccountInfo = namedtuple("AccountInfo", "login trade_mode leverage limit_orders 
 TerminalInfo = namedtuple("TerminalInfo", "community_account community_connection connected dlls_allowed trade_allowed "
                           "tradeapi_disabled ping_last build name company language path data_path")
 SymbolInfo = namedtuple("SymbolInfo", "name description path digits point visible select currency_base currency_profit "
-                        "trade_mode volume_min volume_max volume_step filling_mode trade_contract_size "
-                        "trade_stops_level spread bid ask")
+                        "trade_mode trade_exemode volume_min volume_max volume_step volume_limit filling_mode "
+                        "trade_contract_size trade_tick_size trade_stops_level spread bid ask")
+BookInfo = namedtuple("BookInfo", "type price volume volume_dbl")
 Tick = namedtuple("Tick", "time bid ask last volume time_msc flags volume_real")
 TradePosition = namedtuple("TradePosition", "ticket time time_msc time_update time_update_msc type magic identifier "
                            "reason volume price_open sl tp price_current swap profit symbol comment external_id")
@@ -57,8 +58,10 @@ class FakeTerminal:
         self.balance = 10000.0
         self.error = (1, "Success")
         self.symbols = {
-            "EURUSD": dict(digits=5, point=0.00001, base=1.10000, filling=2, contract=100000, cur=("EUR", "USD")),
-            "XAUUSD": dict(digits=2, point=0.01, base=2000.00, filling=1, contract=100, cur=("XAU", "USD")),
+            "EURUSD": dict(digits=5, point=0.00001, base=1.10000, filling=2, contract=100000, cur=("EUR", "USD"),
+                           trade_mode=4, stops=0, tick_size=0.00001),
+            "XAUUSD": dict(digits=2, point=0.01, base=2000.00, filling=1, contract=100, cur=("XAU", "USD"),
+                           trade_mode=4, stops=50, tick_size=0.05),
         }
         self.selected: set[str] = set()
         self.positions: dict[int, dict] = {}
@@ -69,6 +72,15 @@ class FakeTerminal:
         self.custom_closes: dict[tuple[str, int], list[float]] = {}
         self.sent_requests: list[dict] = []
         self.price_offset: dict[str, float] = {}
+        self.margin_mode = 2              # 0 netting, 2 hedging
+        self.algo_trading = True          # terminal "Algo Trading" button
+        self.api_disabled = False         # "Disable trading via external Python API"
+        self.acc_trade_allowed = True     # False when logged in with investor password
+        self.acc_trade_expert = True
+        self.requotes = 0                 # next N market requests answer 10004 (requote)
+        self.init_failures: list[tuple[int, str]] = []  # queued initialize() failures
+        self.books: set[str] = set()
+        self.book_symbols = {"XAUUSD"}    # symbols with depth of market
 
     # ------------------------------------------------------------------ helpers
     def _fail(self, code: int, msg: str):
@@ -90,6 +102,9 @@ class FakeTerminal:
 
     # ------------------------------------------------------------------ connection
     def initialize(self, path=None, login=None, password=None, server=None, timeout=60000, portable=False):
+        if self.init_failures:
+            self.error = self.init_failures.pop(0)
+            return False
         if path is not None and "missing" in str(path):
             return bool(self._fail(-10003, "IPC initialize failed, MetaTrader 5 x64 not found"))
         if login is not None:
@@ -122,7 +137,8 @@ class FakeTerminal:
         profit = sum(self._pos_profit(p) for p in self.positions.values())
         margin = sum(p["volume"] * 1000 for p in self.positions.values())
         eq = self.balance + profit
-        return AccountInfo(self.logged_in, self.trade_mode, 100, 200, 0, True, True, 2, 2, False,
+        return AccountInfo(self.logged_in, self.trade_mode, 100, 200, 0, self.acc_trade_allowed, self.acc_trade_expert,
+                           self.margin_mode, 2, False,
                            round(self.balance, 2), 0.0, round(profit, 2), round(eq, 2), margin, round(eq - margin, 2),
                            (eq / margin * 100) if margin else 0.0, 50.0, 30.0, "Test Trader", self.SERVER, "USD",
                            "Test Broker Ltd")
@@ -130,7 +146,8 @@ class FakeTerminal:
     def terminal_info(self):
         if not self.initialized:
             return self._fail(-10004, "No IPC connection")
-        return TerminalInfo(False, False, True, False, True, False, 25000, 4000, "MetaTrader 5", "MetaQuotes Ltd.",
+        return TerminalInfo(False, False, True, False, self.algo_trading, self.api_disabled, 25000, 4000,
+                            "MetaTrader 5", "MetaQuotes Ltd.",
                             "en", "C:\\MT5", "C:\\MT5\\data")
 
     # ------------------------------------------------------------------ symbols / market data
@@ -138,8 +155,41 @@ class FakeTerminal:
         s = self.symbols[name]
         bid, ask = self._price(name)
         return SymbolInfo(name, f"{name} test", f"Forex\\{name}", s["digits"], s["point"], name in self.selected,
-                          name in self.selected, s["cur"][0], s["cur"][1], 4, 0.01, 100.0, 0.01, s["filling"],
-                          s["contract"], 0, 10, bid, ask)
+                          name in self.selected, s["cur"][0], s["cur"][1], s["trade_mode"], 2, 0.01, 100.0, 0.01, 0.0,
+                          s["filling"], s["contract"], s["tick_size"], s["stops"], 10, bid, ask)
+
+    def symbols_total(self):
+        return len(self.symbols)
+
+    def market_book_add(self, symbol):
+        if symbol not in self.book_symbols:
+            self.error = (-1, "Terminal: Call failed")
+            return False
+        self.books.add(symbol)
+        return True
+
+    def market_book_get(self, symbol):
+        if symbol not in self.books:
+            return None
+        bid, ask = self._price(symbol)
+        p = self.symbols[symbol]["point"]
+        return tuple([BookInfo(1, round(ask + i * 10 * p, 2), 5 + i, 5.0 + i) for i in range(3)][::-1]
+                     + [BookInfo(2, round(bid - i * 10 * p, 2), 4 + i, 4.0 + i) for i in range(3)])
+
+    def market_book_release(self, symbol):
+        self.books.discard(symbol)
+        return True
+
+    def order_calc_margin(self, action, symbol, volume, price):
+        if symbol not in self.symbols:
+            return self._fail(-2, "Invalid params")
+        return round(volume * self.symbols[symbol]["contract"] * price / 100, 2)  # leverage 1:100
+
+    def order_calc_profit(self, action, symbol, volume, price_open, price_close):
+        if symbol not in self.symbols:
+            return self._fail(-2, "Invalid params")
+        diff = (price_close - price_open) if action == 0 else (price_open - price_close)
+        return round(diff * volume * self.symbols[symbol]["contract"], 2)
 
     def symbols_get(self, group=None):
         if not self.initialized:
@@ -258,6 +308,9 @@ class FakeTerminal:
         action = request.get("action")
         sym = request.get("symbol")
         now = int(time.time())
+        if action == 1 and self.requotes > 0:
+            self.requotes -= 1
+            return self._result(10004, request, comment="Requote")
         if action == 1:  # DEAL
             info = self.symbols.get(sym)
             if info is None:

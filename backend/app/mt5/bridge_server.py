@@ -2,7 +2,7 @@
 
 Run it on the Windows machine (or Wine prefix) where the MetaTrader 5 terminal is installed::
 
-    pip install -r requirements-windows-mt5.txt
+    pip install -r requirements.txt
     set ATO_BRIDGE_TOKEN=<long random token>
     python -m app.mt5.bridge_server --host 0.0.0.0 --port 8765 [--ssl-certfile cert.pem --ssl-keyfile key.pem]
 

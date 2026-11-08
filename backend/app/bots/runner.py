@@ -24,9 +24,10 @@ log = logging.getLogger("ato.bots")
 MAX_CONSECUTIVE_ERRORS = 10
 
 
-def _utc_today_start() -> float:
-    now = datetime.now(timezone.utc)
-    return datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp()
+def server_day_start(offset_s: int | None) -> float:
+    """Start of the current trading day in trade-server time (the coordinate system of MT5 deal times)."""
+    server_now = time.time() + (offset_s or 0)
+    return server_now - server_now % 86400
 
 
 def hours_allowed(hour: int, start: int, end: int) -> bool:
@@ -125,6 +126,7 @@ class BotRunner:
         await self.log("info", f"Бот запущен: {self.strategy.title}, {self.symbol} {self.timeframe}, "
                                f"режим {'торговля' if self.trade_mode == 'live' else 'только сигналы'}, magic {self.magic}")
         await self.publish("running")
+        await self._environment_warnings()
         final_status, final_error = "stopped", None
         try:
             while not self.stop_event.is_set():
@@ -160,6 +162,16 @@ class BotRunner:
             with contextlib.suppress(Exception):
                 await self.log("error" if final_error else "info", final_error or "Бот остановлен")
             await self.publish(final_status)
+
+    async def _environment_warnings(self) -> None:
+        rt = self.accounts.runtimes.get(self.account_id)
+        acc = (rt.account if rt else None) or {}
+        if acc.get("margin_mode") is not None and acc.get("margin_mode") != 2:
+            await self.log("warning", "Неттинговый счёт: по символу существует одна общая позиция. Не запускайте "
+                                      "несколько ботов и не торгуйте вручную на том же символе.")
+        if rt and rt.terminal and not rt.terminal.get("trade_allowed") and self.trade_mode == "live":
+            await self.log("warning", "В терминале выключена кнопка «Алго-трейдинг» — ордера будут отклонены, "
+                                      "пока её не включить.")
 
     # ------------------------------------------------------------------ cycle
     async def call(self, method: str, **params: Any) -> Any:
@@ -261,7 +273,9 @@ class BotRunner:
         return None
 
     async def daily_pnl(self, positions: list[dict] | None = None) -> float:
-        deals = await self.call("history_deals", date_from=_utc_today_start(), date_to=time.time() + 86400, magic=self.magic)
+        rt = self.accounts.runtimes.get(self.account_id)
+        deals = await self.call("history_deals", date_from=server_day_start(rt.server_offset_s if rt else None),
+                                date_to=time.time() + 86400, magic=self.magic)
         realized = sum(d["profit"] + d.get("commission", 0) + d.get("swap", 0) + d.get("fee", 0) for d in deals)
         if positions is None:
             positions = await self.call("positions", magic=self.magic)

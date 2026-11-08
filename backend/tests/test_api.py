@@ -213,3 +213,22 @@ async def test_input_validation_and_account_patch(app_client, use_bridge):
     # account with bots cannot be deleted
     await c.post("/api/bots", headers=h, json={"name": "b", "account_id": aid, "strategy": "sma_cross", "symbol": "EURUSD"})
     assert (await c.delete(f"/api/accounts/{aid}", headers=h)).status_code == 409
+
+
+async def test_diagnostics_calc_and_book_endpoints(app_client, use_bridge, terminal):
+    c = app_client
+    h = await make_admin(c)
+    aid = (await c.post("/api/accounts", headers=h, json=ACC)).json()["id"]
+    await c.post(f"/api/accounts/{aid}/connect", headers=h)
+    d = (await c.get(f"/api/accounts/{aid}/diagnostics", headers=h)).json()
+    assert d["ready"] and any(x["key"] == "algo_button" for x in d["checks"])
+    calc = (await c.post(f"/api/accounts/{aid}/orders/calc", headers=h,
+                         json={"symbol": "EURUSD", "side": "sell", "volume": 0.1})).json()
+    assert calc["margin"] > 0 and calc["currency"] == "USD"
+    assert (await c.get(f"/api/accounts/{aid}/book", headers=h, params={"symbol": "XAUUSD"})).json()["available"]
+    assert not (await c.get(f"/api/accounts/{aid}/book", headers=h, params={"symbol": "EURUSD"})).json()["available"]
+    terminal.algo_trading = False
+    r = await c.post(f"/api/accounts/{aid}/orders/market", headers=h, json={"symbol": "EURUSD", "side": "buy", "volume": 0.1})
+    assert r.status_code == 502 and "Алго-трейдинг" in r.json()["detail"]
+    audit = (await c.get("/api/audit", headers=h, params={"action": "trade.market"})).json()
+    assert audit[0]["ok"] is False

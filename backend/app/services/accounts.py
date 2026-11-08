@@ -42,6 +42,8 @@ class AccountRuntime:
     positions: list[dict] = field(default_factory=list)
     orders: list[dict] = field(default_factory=list)
     ticks: dict[str, Any] = field(default_factory=dict)
+    version: dict | None = None
+    server_offset_s: int | None = None
     connected_at: float | None = None
     last_update: float | None = None
     desired: bool = False
@@ -52,6 +54,7 @@ class AccountRuntime:
         return {
             "account_id": self.account_id, "status": self.status, "error": self.error,
             "unavailable": self.unavailable, "account": self.account, "terminal": self.terminal,
+            "version": self.version, "server_offset_s": self.server_offset_s,
             "connected_at": self.connected_at, "last_update": self.last_update,
             "positions_count": len(self.positions), "orders_count": len(self.orders),
         }
@@ -144,6 +147,7 @@ class AccountManager:
                 raise
             rt.gateway = gw
             rt.account, rt.terminal = status["account"], status["terminal"]
+            rt.version, rt.server_offset_s = status.get("version"), status.get("server_offset_s")
             rt.status, rt.connected_at, rt.last_update = "connected", time.time(), time.time()
             with session_scope() as s:
                 row = s.get(BrokerAccount, account_id)
@@ -241,6 +245,7 @@ class AccountManager:
                 if time.time() - last_acc >= a_int:
                     st = await rt.gateway.call("status")
                     rt.account, rt.terminal = st["account"], st["terminal"]
+                    rt.server_offset_s = st.get("server_offset_s", rt.server_offset_s)
                     rt.positions = await rt.gateway.call("positions")
                     rt.orders = await rt.gateway.call("orders")
                     rt.last_update = last_acc = time.time()

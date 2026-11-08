@@ -6,14 +6,14 @@ import { CandleChart, LivePrice } from "../components/Charts";
 import { Empty, ErrorBox, Field, Modal, ModeBadge, StatusBadge, notify, useAction } from "../components/ui";
 import { fmtNum, fmtPrice, fmtServerTime, ORDER_TYPE_LABEL, pnlClass } from "../format";
 import { useInterval, useTopic } from "../hooks";
-import type { AccountInfo, Deal, Order, Position, Rate, SymbolBrief, Tick, TradeResult } from "../types";
+import type { AccountInfo, CalcResult, Deal, MarketBook, Order, Position, Rate, SymbolBrief, Tick, TradeResult } from "../types";
 
 const TF_SEC: Record<string, number> = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400, W1: 604800 };
 
 function resultText(r: TradeResult): string {
   return `${r.retcode_text} (retcode ${r.retcode ?? "—"}${r.order ? `, ордер #${r.order}` : ""}${r.deal ? `, сделка #${r.deal}` : ""}${
     r.price ? `, цена ${r.price}` : ""
-  })`;
+  }${r.attempts && r.attempts > 1 ? `, попыток ${r.attempts}` : ""})`;
 }
 
 export default function TerminalPage() {
@@ -28,6 +28,7 @@ export default function TerminalPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [ticks, setTicks] = useState<Record<string, Tick | null>>({});
   const [watch, setWatch] = useState<string[]>([]);
+  const [showBook, setShowBook] = useState(false);
   const [symbols, setSymbols] = useState<SymbolBrief[]>([]);
   const [symbol, setSymbol] = useState<string>("");
   const [tf, setTf] = useState("M15");
@@ -53,7 +54,7 @@ export default function TerminalPage() {
     if (!accountId) return;
     api<{ symbols: string[] }>(`/api/accounts/${accountId}/watchlist`).then((w) => {
       setWatch(w.symbols);
-      setSymbol((s) => (s && w.symbols.includes(s) ? s : w.symbols[0] ?? ""));
+      setSymbol((s) => (s && w.symbols.includes(s) ? s : (w.symbols[0] ?? "")));
     });
   }, [accountId]);
 
@@ -169,7 +170,13 @@ export default function TerminalPage() {
         <section className="panel watch">
           <div className="panel-head">Обзор рынка</div>
           <form className="row gap-s" onSubmit={addSymbol}>
-            <input list="symbols-list" placeholder="Добавить символ" value={newSym} onChange={(e) => setNewSym(e.target.value)} disabled={!connected} />
+            <input
+              list="symbols-list"
+              placeholder="Добавить символ"
+              value={newSym}
+              onChange={(e) => setNewSym(e.target.value)}
+              disabled={!connected}
+            />
             <datalist id="symbols-list">
               {symbols.slice(0, 3000).map((s) => (
                 <option key={s.name} value={s.name}>
@@ -225,12 +232,17 @@ export default function TerminalPage() {
             <span>
               {symbol || "—"} {tick && <span className="muted">· {fmtServerTime(tick.time)} (время сервера)</span>}
             </span>
-            <div className="tf-switch">
-              {Object.keys(TF_SEC).map((t) => (
-                <button key={t} className={t === tf ? "active" : ""} onClick={() => setTf(t)}>
-                  {t}
-                </button>
-              ))}
+            <div className="row">
+              <button className="btn btn-sm btn-ghost" disabled={!symbol || !connected} onClick={() => setShowBook(true)}>
+                Стакан
+              </button>
+              <div className="tf-switch">
+                {Object.keys(TF_SEC).map((t) => (
+                  <button key={t} className={t === tf ? "active" : ""} onClick={() => setTf(t)}>
+                    {t}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           <ErrorBox error={ratesErr} />
@@ -244,7 +256,13 @@ export default function TerminalPage() {
         <section className="panel ticket">
           <div className="panel-head">Новый ордер</div>
           {can("trader") ? (
-            <OrderTicket accountId={accountId} symbol={symbol} tick={tick ?? null} enabled={connected} brief={symbols.find((s) => s.name === symbol)} />
+            <OrderTicket
+              accountId={accountId}
+              symbol={symbol}
+              tick={tick ?? null}
+              enabled={connected}
+              brief={symbols.find((s) => s.name === symbol)}
+            />
           ) : (
             <div className="muted small">Роль «viewer» — только просмотр.</div>
           )}
@@ -267,6 +285,58 @@ export default function TerminalPage() {
         {tab === "orders" && <OrdersTable accountId={accountId!} orders={orders} canTrade={can("trader") && connected} />}
         {tab === "history" && accountId && <History accountId={accountId} enabled={connected} />}
       </section>
+      {showBook && accountId && symbol && (
+        <Modal title={`Стакан цен: ${symbol}`} onClose={() => setShowBook(false)}>
+          <BookView accountId={accountId} symbol={symbol} digits={digits} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function BookView({ accountId, symbol, digits }: { accountId: number; symbol: string; digits: number }) {
+  const [book, setBook] = useState<MarketBook | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function load() {
+    try {
+      setBook(await api<MarketBook>(`/api/accounts/${accountId}/book`, { query: { symbol } }));
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, symbol]);
+  useInterval(load, book && !book.available ? null : 1000);
+  const maxVol = Math.max(1e-9, ...(book?.items ?? []).map((i) => i.volume));
+  return (
+    <div>
+      <ErrorBox error={error} />
+      {book && !book.available && <Empty>{book.reason ?? "Брокер не транслирует стакан по этому символу."}</Empty>}
+      {book?.available && (
+        <table className="table compact book-table">
+          <thead>
+            <tr>
+              <th>Цена</th>
+              <th>Объём</th>
+            </tr>
+          </thead>
+          <tbody>
+            {book.items.map((i, n) => (
+              <tr key={n} className={i.type.startsWith("sell") ? "book-sell" : "book-buy"}>
+                <td>{fmtPrice(i.price, digits)}</td>
+                <td className="book-bar">
+                  <i style={{ width: `${(i.volume / maxVol) * 100}%` }} />
+                  {i.volume}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="muted small">Данные market_book_get, обновление раз в секунду. Многие форекс-брокеры стакан не транслируют.</p>
     </div>
   );
 }
@@ -292,9 +362,47 @@ function OrderTicket({
   const [ptype, setPtype] = useState("buy_limit");
   const [price, setPrice] = useState("");
   const [check, setCheck] = useState<TradeResult | null>(null);
+  const [calc, setCalc] = useState<CalcResult | null>(null);
+  const [calcErr, setCalcErr] = useState<string | null>(null);
   const act = useAction();
   const num = (s: string) => (s.trim() === "" ? null : Number(s));
   const disabled = !enabled || !symbol || act.busy;
+
+  // Side used for the estimate: pending type, or inferred from where SL/TP are relative to the price.
+  const calcSide: "buy" | "sell" = useMemo(() => {
+    if (mode === "pending") return ptype.startsWith("buy") ? "buy" : "sell";
+    const slv = num(sl);
+    const tpv = num(tp);
+    if (tick && ((slv && slv > tick.ask) || (tpv && tpv < tick.bid))) return "sell";
+    return "buy";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, ptype, sl, tp, tick?.bid, tick?.ask]);
+  const hasTick = !!tick;
+
+  useEffect(() => {
+    setCalc(null);
+    setCalcErr(null);
+    const vol = Number(volume);
+    if (!enabled || !accountId || !symbol || !hasTick || !(vol > 0)) return;
+    if (mode === "pending" && !(Number(price) > 0)) return;
+    let cancelled = false;
+    const id = window.setTimeout(async () => {
+      try {
+        const r = await api<CalcResult>(`/api/accounts/${accountId}/orders/calc`, {
+          method: "POST",
+          body: { symbol, side: calcSide, volume: vol, price: mode === "pending" ? Number(price) : null, sl: num(sl), tp: num(tp) },
+        });
+        if (!cancelled) setCalc(r);
+      } catch (e) {
+        if (!cancelled) setCalcErr((e as Error).message);
+      }
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, accountId, symbol, hasTick, volume, sl, tp, price, mode, calcSide]);
 
   async function market(side: "buy" | "sell") {
     if (!accountId) return;
@@ -348,7 +456,13 @@ function OrderTicket({
         {brief && ` · лот ${brief.volume_min}–${brief.volume_max}, шаг ${brief.volume_step}`}
       </div>
       <Field label="Объём (лот)">
-        <input type="number" step={brief?.volume_step ?? 0.01} min={brief?.volume_min ?? 0.01} value={volume} onChange={(e) => setVolume(e.target.value)} />
+        <input
+          type="number"
+          step={brief?.volume_step ?? 0.01}
+          min={brief?.volume_min ?? 0.01}
+          value={volume}
+          onChange={(e) => setVolume(e.target.value)}
+        />
       </Field>
       {mode === "pending" && (
         <>
@@ -362,7 +476,13 @@ function OrderTicket({
             </select>
           </Field>
           <Field label="Цена">
-            <input type="number" step="any" value={price} onChange={(e) => setPrice(e.target.value)} placeholder={tick ? String(tick.bid) : ""} />
+            <input
+              type="number"
+              step="any"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              placeholder={tick ? String(tick.bid) : ""}
+            />
           </Field>
         </>
       )}
@@ -374,6 +494,39 @@ function OrderTicket({
           <input type="number" step="any" value={tp} onChange={(e) => setTp(e.target.value)} placeholder="нет" />
         </Field>
       </div>
+      {calc && (
+        <div className="calc-box" title="Расчёт терминала: order_calc_margin / order_calc_profit">
+          <span>Расчёт для</span>
+          <b>
+            {calc.side.toUpperCase()} {calc.volume} @ {calc.price}
+          </b>
+          <span>Маржа</span>
+          <b>
+            {fmtNum(calc.margin)} {calc.currency}
+          </b>
+          {calc.margin_free_after != null && (
+            <>
+              <span>Свободно после</span>
+              <b className={calc.margin_free_after < 0 ? "neg" : ""}>{fmtNum(calc.margin_free_after)}</b>
+            </>
+          )}
+          <span>1 пункт</span>
+          <b>{fmtNum(calc.point_value)}</b>
+          {calc.profit_at_sl != null && (
+            <>
+              <span>При SL</span>
+              <b className={pnlClass(calc.profit_at_sl)}>{fmtNum(calc.profit_at_sl)}</b>
+            </>
+          )}
+          {calc.profit_at_tp != null && (
+            <>
+              <span>При TP</span>
+              <b className={pnlClass(calc.profit_at_tp)}>{fmtNum(calc.profit_at_tp)}</b>
+            </>
+          )}
+        </div>
+      )}
+      {calcErr && <div className="error-text small">{calcErr}</div>}
       {mode === "market" ? (
         <>
           <Field label="Отклонение (пунктов)">
@@ -486,7 +639,8 @@ function PositionsTable({ accountId, positions, canTrade }: { accountId: number;
       {canTrade && (
         <div className="table-foot">
           <span className="muted">
-            Итого: <b className={pnlClass(positions.reduce((s, p) => s + p.profit, 0))}>{fmtNum(positions.reduce((s, p) => s + p.profit, 0))}</b>
+            Итого:{" "}
+            <b className={pnlClass(positions.reduce((s, p) => s + p.profit, 0))}>{fmtNum(positions.reduce((s, p) => s + p.profit, 0))}</b>
           </span>
           <button className="btn btn-sm btn-danger" disabled={act.busy} onClick={closeAll}>
             Закрыть все
@@ -498,7 +652,17 @@ function PositionsTable({ accountId, positions, canTrade }: { accountId: number;
   );
 }
 
-function ModifyPosition({ accountId, p, onClose, onPartial }: { accountId: number; p: Position; onClose: () => void; onPartial: (v: number) => void }) {
+function ModifyPosition({
+  accountId,
+  p,
+  onClose,
+  onPartial,
+}: {
+  accountId: number;
+  p: Position;
+  onClose: () => void;
+  onPartial: (v: number) => void;
+}) {
   const [sl, setSl] = useState(p.sl ? String(p.sl) : "");
   const [tp, setTp] = useState(p.tp ? String(p.tp) : "");
   const [partial, setPartial] = useState("");
@@ -533,7 +697,13 @@ function ModifyPosition({ accountId, p, onClose, onPartial }: { accountId: numbe
       </form>
       <hr />
       <div className="row gap-s">
-        <input type="number" step="any" placeholder="Объём частичного закрытия" value={partial} onChange={(e) => setPartial(e.target.value)} />
+        <input
+          type="number"
+          step="any"
+          placeholder="Объём частичного закрытия"
+          value={partial}
+          onChange={(e) => setPartial(e.target.value)}
+        />
         <button
           className="btn"
           disabled={!partial}

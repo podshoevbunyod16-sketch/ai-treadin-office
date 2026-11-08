@@ -77,3 +77,23 @@ def retcode_text(code: int | None) -> str:
     if code is None:
         return "Нет ответа"
     return RETCODES.get(int(code), f"Код {code}")
+
+TRADE_ACTION_CLOSE_BY = 10
+
+SYMBOL_TRADE_MODES = {0: "disabled", 1: "longonly", 2: "shortonly", 3: "closeonly", 4: "full"}
+SYMBOL_TRADE_EXECUTIONS = {0: "request", 1: "instant", 2: "market", 3: "exchange"}
+ACCOUNT_MARGIN_MODES = {0: "netting", 1: "exchange", 2: "hedging"}
+BOOK_TYPES = {1: "sell", 2: "buy", 3: "sell_market", 4: "buy_market"}
+COPY_TICKS_ALL = -1
+
+# Retcodes after which a market request is re-sent with a fresh quote
+RETRY_RETCODES = {10004, 10020, 10021}
+
+# last_error() codes of the MetaTrader5 package
+MT5_ERRORS = {
+    1: "Успешно", -1: "Общая ошибка", -2: "Неверные параметры", -3: "Нет памяти", -4: "Нет истории",
+    -5: "Неверная версия", -6: "Ошибка авторизации", -7: "Метод не поддерживается", -8: "Автотрейдинг отключён",
+    -10000: "Внутренняя ошибка IPC", -10001: "Ошибка отправки IPC", -10002: "Ошибка приёма IPC",
+    -10003: "Ошибка инициализации IPC (терминал не найден)", -10004: "Нет IPC-соединения с терминалом",
+    -10005: "Таймаут IPC",
+}

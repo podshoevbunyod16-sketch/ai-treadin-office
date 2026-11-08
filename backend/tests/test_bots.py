@@ -151,3 +151,30 @@ async def test_bot_stops_after_repeated_errors(app_client, use_bridge, terminal,
     await runner.task
     b = (await c.get(f"/api/bots/{bot['id']}", headers=h)).json()
     assert b["status"] == "error" and "не найден" in b["last_error"]
+
+
+async def test_netting_account_warning_on_start(app_client, use_bridge, terminal):
+    c = app_client
+    terminal.margin_mode = 0
+    h, aid, bot = await setup(c, terminal, trade_mode="signals")
+    await c.post(f"/api/accounts/{aid}/disconnect", headers=h)
+    await c.post(f"/api/accounts/{aid}/connect", headers=h)
+    await c.post(f"/api/bots/{bot['id']}/start", headers=h)
+
+    async def warned():
+        logs = (await c.get(f"/api/bots/{bot['id']}/logs", headers=h, params={"level": "warning"})).json()
+        return logs if any("Неттинговый счёт" in l["message"] for l in logs) else None
+
+    assert await wait_for(warned)
+    await c.post("/api/bots/stop-all", headers=h)
+
+
+def test_server_day_start():
+    import time
+
+    from app.bots.runner import server_day_start
+
+    now = time.time()
+    assert abs(server_day_start(None) - (now - now % 86400)) < 2
+    start = server_day_start(3 * 3600)
+    assert start % 86400 == 0 and 0 <= now + 3 * 3600 - start < 86400

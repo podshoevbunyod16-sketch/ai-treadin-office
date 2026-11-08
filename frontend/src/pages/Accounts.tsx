@@ -5,7 +5,7 @@ import { useAuth } from "../auth";
 import { fmtIso, fmtNum } from "../format";
 import { useApi } from "../hooks";
 import { Empty, ErrorBox, Field, Modal, ModeBadge, StatusBadge, useAction } from "../components/ui";
-import type { Account, Runtime, SystemStatus } from "../types";
+import type { Account, Diagnostics, Runtime, SystemStatus } from "../types";
 
 interface FormState {
   name: string;
@@ -22,7 +22,7 @@ interface FormState {
 
 const EMPTY: FormState = {
   name: "",
-  connection_type: "bridge",
+  connection_type: "local",
   login: "",
   server: "",
   password: "",
@@ -46,7 +46,7 @@ function AccountForm({ initial, onDone, sys }: { initial: Account | null; onDone
           bridge_url: initial.bridge_url ?? "",
           auto_connect: initial.auto_connect,
         }
-      : EMPTY,
+      : { ...EMPTY, connection_type: sys && !sys.mt5_package_installed ? "bridge" : "local" },
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -87,10 +87,11 @@ function AccountForm({ initial, onDone, sys }: { initial: Account | null; onDone
       </Field>
       <Field label="Тип подключения">
         <select value={f.connection_type} onChange={(e) => set("connection_type", e.target.value)}>
-          <option value="bridge">MT5-мост (терминал на Windows-машине / VPS)</option>
           <option value="local" disabled={!!sys && !sys.mt5_package_installed}>
-            Локально (сервер на Windows с терминалом){sys && !sys.mt5_package_installed ? " — недоступно на этом сервере" : ""}
+            Напрямую: библиотека MetaTrader5 (рекомендуется)
+            {sys && !sys.mt5_package_installed ? " — пакет не установлен на этом сервере" : ""}
           </option>
+          <option value="bridge">Через MT5-мост (терминал на другой Windows-машине / VPS)</option>
         </select>
       </Field>
       <div className="grid-2">
@@ -113,11 +114,19 @@ function AccountForm({ initial, onDone, sys }: { initial: Account | null; onDone
       </Field>
       {initial?.has_password && (
         <label className="check">
-          <input type="checkbox" checked={f.clear_password} onChange={(e) => set("clear_password", e.target.checked)} /> Удалить сохранённый пароль
+          <input type="checkbox" checked={f.clear_password} onChange={(e) => set("clear_password", e.target.checked)} /> Удалить сохранённый
+          пароль
         </label>
       )}
-      <Field label="Путь к terminal64.exe (необязательно)" hint="Нужен, если на машине несколько терминалов MT5.">
-        <input value={f.terminal_path} onChange={(e) => set("terminal_path", e.target.value)} placeholder="C:\Program Files\MetaTrader 5\terminal64.exe" />
+      <Field
+        label="Путь к terminal64.exe (необязательно)"
+        hint="Нужен, если установлено несколько терминалов MT5. Для одновременной работы нескольких счетов у каждого должен быть свой терминал (своя папка установки)."
+      >
+        <input
+          value={f.terminal_path}
+          onChange={(e) => set("terminal_path", e.target.value)}
+          placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"
+        />
       </Field>
       {f.connection_type === "bridge" && (
         <div className="grid-2">
@@ -136,8 +145,8 @@ function AccountForm({ initial, onDone, sys }: { initial: Account | null; onDone
         </div>
       )}
       <label className="check">
-        <input type="checkbox" checked={f.auto_connect} onChange={(e) => set("auto_connect", e.target.checked)} /> Подключать автоматически при старте
-        сервера и переподключать при обрыве
+        <input type="checkbox" checked={f.auto_connect} onChange={(e) => set("auto_connect", e.target.checked)} /> Подключать автоматически
+        при старте сервера и переподключать при обрыве
       </label>
       <div className="form-actions">
         <button className="btn btn-primary" disabled={busy}>
@@ -148,11 +157,57 @@ function AccountForm({ initial, onDone, sys }: { initial: Account | null; onDone
   );
 }
 
+function fmtOffset(s: number): string {
+  const h = s / 3600;
+  return `${h >= 0 ? "+" : ""}${Number.isInteger(h) ? h : h.toFixed(1)}`;
+}
+
+function DiagnosticsView({ account }: { account: Account }) {
+  const d = useApi<Diagnostics>(`/api/accounts/${account.id}/diagnostics`);
+  return (
+    <div>
+      <ErrorBox error={d.error} />
+      {d.loading && !d.data && <p className="muted">Опрос терминала…</p>}
+      {d.data && (
+        <>
+          <div className={`diag-summary ${d.data.ready ? "ok" : "bad"}`}>
+            {d.data.ready
+              ? "Терминал готов к торговле через Python API"
+              : "Торговля через Python API сейчас невозможна — исправьте отмеченные пункты"}
+            {d.data.version && (
+              <div className="muted small">
+                MetaTrader 5 build {d.data.version.build} ({d.data.version.date})
+              </div>
+            )}
+          </div>
+          <ul className="diag-list">
+            {d.data.checks.map((c) => (
+              <li key={c.key} className={`diag-${c.level}`}>
+                <span className="diag-icon">{c.ok ? "✓" : c.level === "error" ? "✕" : "!"}</span>
+                <div>
+                  <b>{c.title}</b>
+                  <div className="muted small">{c.detail}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <div className="form-actions">
+        <button className="btn" onClick={() => d.reload()} disabled={d.loading}>
+          Проверить снова
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AccountsPage() {
   const { accounts, reload, error } = useAccounts();
   const { can } = useAuth();
   const sys = useApi<SystemStatus>("/api/system/status");
   const [edit, setEdit] = useState<Account | null | "new">(null);
+  const [diag, setDiag] = useState<Account | null>(null);
   const act = useAction();
 
   async function connect(a: Account) {
@@ -209,7 +264,11 @@ export default function AccountsPage() {
                   <div className="muted small">{a.server}</div>
                 </td>
                 <td>
-                  {a.connection_type === "bridge" ? `Мост ${a.bridge_url ?? ""}` : "Локально"}
+                  {a.connection_type === "bridge" ? `Мост ${a.bridge_url ?? ""}` : "MetaTrader5 (напрямую)"}
+                  {a.runtime.version && <div className="muted small">MT5 build {a.runtime.version.build}</div>}
+                  {a.runtime.server_offset_s != null && (
+                    <div className="muted small">время сервера UTC{fmtOffset(a.runtime.server_offset_s)}</div>
+                  )}
                   {a.auto_connect && <div className="muted small">автоподключение</div>}
                 </td>
                 <td>
@@ -222,6 +281,11 @@ export default function AccountsPage() {
                 </td>
                 <td>{a.runtime.account ? `${fmtNum(a.runtime.account.balance)} ${a.runtime.account.currency}` : "—"}</td>
                 <td className="actions">
+                  {a.runtime.status === "connected" && (
+                    <button className="btn btn-sm btn-ghost" onClick={() => setDiag(a)}>
+                      Диагностика
+                    </button>
+                  )}
                   {can("trader") && (
                     <>
                       {a.runtime.status === "connected" || a.runtime.status === "connecting" ? (
@@ -251,31 +315,45 @@ export default function AccountsPage() {
       )}
 
       <div className="card info-card">
-        <h3>Как подключить реальный терминал MetaTrader 5</h3>
+        <h3>Подключение к MetaTrader 5 через библиотеку MetaTrader5</h3>
         <p className="muted">
-          Официальный Python-пакет <code>MetaTrader5</code> работает только в Windows рядом с запущенным терминалом MT5.
+          Приложение работает с терминалом напрямую через официальный Python-пакет MetaQuotes <code>MetaTrader5</code>. Пакет выпускается
+          только для Windows x64 и подключается к терминалу, запущенному на той же машине.
           {sys.data && (
             <>
               {" "}
-              Этот сервер: <code>{sys.data.os}</code>, пакет MetaTrader5 {sys.data.mt5_package_installed ? "установлен" : <b>не установлен</b>}.
+              Этот сервер: <code>{sys.data.os}</code>, пакет MetaTrader5{" "}
+              {sys.data.mt5_package_installed ? "установлен" : <b>не установлен — прямое подключение здесь недоступно</b>}.
             </>
           )}
         </p>
         <ol className="steps">
+          <li>Установите MetaTrader 5 (с сайта брокера или metatrader5.com), откройте демо-счёт и войдите в него.</li>
           <li>
-            На Windows-машине/VPS установите MetaTrader 5, войдите в демо-счёт и включите <i>Сервис → Настройки → Советники → Разрешить алгоритмическую торговлю</i>.
+            Включите кнопку <b>«Алго-трейдинг»</b> на панели терминала; в <i>Сервис → Настройки → Советники</i> не должна стоять галочка
+            запрета торговли через внешний Python API.
           </li>
           <li>
-            Скопируйте папку <code>backend</code> и выполните: <code>pip install -r requirements-windows-mt5.txt</code>
+            Запустите приложение на этой же Windows-машине: <code>start.bat</code> в корне проекта (сам установит зависимости, включая
+            MetaTrader5).
           </li>
           <li>
-            Запустите мост: <code>set ATO_BRIDGE_TOKEN=&lt;случайная строка ≥ 24 символов&gt;</code> и{" "}
-            <code>python -m app.mt5.bridge_server --host 0.0.0.0 --port 8765</code> (для доступа через интернет — с <code>--ssl-certfile/--ssl-keyfile</code> или через VPN).
+            Добавьте счёт с типом «Напрямую: библиотека MetaTrader5», нажмите «Подключить», затем «Диагностика» — проверка покажет, что ещё
+            нужно включить.
           </li>
-          <li>Добавьте здесь счёт с типом «MT5-мост», укажите URL моста и токен, нажмите «Подключить».</li>
         </ol>
-        <p className="muted small">Один мост обслуживает один терминал (один счёт). Для нескольких счетов запустите несколько терминалов и мостов на разных портах.</p>
+        <p className="muted small">
+          Проверка без веб-интерфейса: <code>scripts\check_mt5.bat --trade</code> (тестовая сделка минимальным лотом выполняется только на
+          DEMO). Если сервер приложения работает не на Windows, используйте тип «MT5-мост»: на Windows-машине с терминалом запустите{" "}
+          <code>scripts\start_bridge.ps1</code>.
+        </p>
       </div>
+
+      {diag && (
+        <Modal title={`Диагностика: ${diag.name} #${diag.login}`} onClose={() => setDiag(null)}>
+          <DiagnosticsView account={diag} />
+        </Modal>
+      )}
 
       {edit && (
         <Modal title={edit === "new" ? "Новый счёт MT5" : `Счёт «${edit.name}»`} onClose={() => setEdit(null)}>

@@ -26,6 +26,8 @@ export interface AccountInfo {
   trade_allowed: boolean;
   trade_expert: boolean;
   currency_digits?: number;
+  margin_mode?: number;
+  margin_mode_name?: string;
 }
 
 export interface TerminalInfo {
@@ -45,6 +47,8 @@ export interface Runtime {
   unavailable?: boolean;
   account?: AccountInfo | null;
   terminal?: TerminalInfo | null;
+  version?: { build: number; date: string; version: number } | null;
+  server_offset_s?: number | null;
   connected_at?: number | null;
   last_update?: number | null;
   positions_count?: number;
@@ -166,6 +170,7 @@ export interface TradeResult {
   comment?: string;
   margin?: number;
   margin_free?: number;
+  attempts?: number;
 }
 
 export interface ParamDef {
@@ -291,4 +296,44 @@ export interface SystemStatus {
   accounts: Runtime[];
   bots_running: number[];
   ws_clients: number;
+}
+
+export interface DiagCheck {
+  key: string;
+  title: string;
+  ok: boolean;
+  level: "ok" | "warning" | "error";
+  detail: string;
+}
+
+export interface Diagnostics {
+  ready: boolean;
+  checks: DiagCheck[];
+  version: { build: number; date: string; version: number } | null;
+}
+
+export interface CalcResult {
+  symbol: string;
+  side: "buy" | "sell";
+  volume: number;
+  price: number;
+  margin: number | null;
+  margin_free_after: number | null;
+  profit_at_sl: number | null;
+  profit_at_tp: number | null;
+  point_value: number | null;
+  currency: string;
+}
+
+export interface BookItem {
+  type: "sell" | "buy" | "sell_market" | "buy_market";
+  price: number;
+  volume: number;
+}
+
+export interface MarketBook {
+  symbol: string;
+  available: boolean;
+  items: BookItem[];
+  reason?: string;
 }

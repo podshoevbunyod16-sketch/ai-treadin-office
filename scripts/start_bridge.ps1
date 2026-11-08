@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..\backend")
 if (-not (Test-Path ".venv")) { py -3 -m venv .venv }
-.\.venv\Scripts\pip install -q -r requirements-windows-mt5.txt
+.\.venv\Scripts\pip install -q -r requirements.txt
 if (-not $env:ATO_BRIDGE_TOKEN) {
   $bytes = New-Object byte[] 32
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
